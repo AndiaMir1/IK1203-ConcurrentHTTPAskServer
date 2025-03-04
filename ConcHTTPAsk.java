@@ -25,7 +25,6 @@ public class ConcHTTPAsk {
 
 class ClientHandler implements Runnable {
     private Socket clientSocket;
-
     public ClientHandler(Socket socket) {
         this.clientSocket = socket;
     }
@@ -90,7 +89,7 @@ class ClientHandler implements Runnable {
             String message = params.getOrDefault("string", "");
             
             TCPClient client = new TCPClient(false, 0, 0);
-            byte[] response = client.askServer(hostname, targetPort, message.getBytes(StandardCharsets.UTF_8)); 
+            byte[] response = client.askServer(hostname, targetPort, message.isEmpty() ? null : message.getBytes(StandardCharsets.UTF_8)); 
             String result = new String(response, StandardCharsets.UTF_8);
             sendResponse(out, "200 OK", result);
         } catch (Exception e) {

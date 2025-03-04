@@ -1,3 +1,4 @@
+
 import java.io.*;
 import java.net.*;
 
@@ -12,39 +13,57 @@ public class TCPClient {
         this.limit = limit;
     }
 
-    public byte[] askServer(String hostname, int port, byte[] toServerBytes) throws IOException {
-        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-        Socket socket = new Socket(hostname, port);
-
+    public byte[] askServer(String hostname, int port, byte[] bytesToServer) throws IOException {
+        Socket socket = null;
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         try {
+            socket = new Socket(hostname, port);
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
             if (timeout != null) {
                 socket.setSoTimeout(timeout);
             }
 
-            OutputStream out = socket.getOutputStream();
-            InputStream in = socket.getInputStream();
+            out.write(bytesToServer);
+            out.flush();
 
-            out.write(toServerBytes);
             if (shutdown) {
                 socket.shutdownOutput();
             }
 
-            byte[] buffer = new byte[1024];
+            byte[] tempBuff = new byte[2048];
             int bytesRead;
             int totalBytesRead = 0;
-
-            while ((bytesRead = in.read(buffer)) != -1) {
-                byteArrayOutputStream.write(buffer, 0, bytesRead);
-                totalBytesRead += bytesRead;
-                if (limit != null && totalBytesRead >= limit) {
-                    break;
+            try {
+                while (true) {
+                    try {
+                        bytesRead = in.read(tempBuff);
+                        if (bytesRead == -1) break;
+                        buffer.write(tempBuff, 0, bytesRead);
+                        totalBytesRead += bytesRead;
+            
+                        if (limit != null && totalBytesRead >= limit) {
+                            break;
+                        }
+                    } catch (SocketTimeoutException e) {
+                        break;
+                    }
                 }
+            } catch (IOException e) {
+                System.err.println("IOException: " + e.getMessage());
+                throw e;
             }
+            
+        } catch (IOException e) {
+            System.err.println("IOException: " + e.getMessage());
+            throw e;
         } finally {
-            socket.close();
+            if (socket != null) {
+                socket.close();
+            }
         }
-
-        return byteArrayOutputStream.toByteArray();
+        return buffer.toByteArray();
     }
 
     public byte[] askServer(String hostname, int port) throws IOException {
