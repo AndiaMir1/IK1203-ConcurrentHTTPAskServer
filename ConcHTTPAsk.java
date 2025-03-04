@@ -1,99 +1,103 @@
 import java.io.*;
 import java.net.*;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
 public class ConcHTTPAsk {
     public static void main(String[] args) {
         if (args.length != 1) {
-            System.err.println("Usage: java ConcHTTPAsk <port>");
-            return;
+            System.err.println("Användning: java ConcHTTPAsk <portnummer>");
+            System.exit(1);
         }
 
-        int port = Integer.parseInt(args[0]);
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
+        int portNumber = Integer.parseInt(args[0]);
+
+        try (ServerSocket serverSocket = new ServerSocket(portNumber)) {
             while (true) {
-                Socket clientSocket = serverSocket.accept();
-                new Thread(new ClientHandler(clientSocket)).start();
+                try {
+                    Socket clientSocket = serverSocket.accept();
+                    new Thread(new ClientHandler(clientSocket)).start();
+                } catch (IOException e) {
+                    System.err.println("Klientanslutningsfel: " + e.getMessage());
+                }
             }
         } catch (IOException e) {
-            System.err.println("Could not start server on port " + port);
+            System.err.println("Kunde inte lyssna på port " + portNumber);
+            System.exit(-1);
         }
     }
 }
 
 class ClientHandler implements Runnable {
     private Socket clientSocket;
+
     public ClientHandler(Socket socket) {
         this.clientSocket = socket;
     }
 
-    @Override
     public void run() {
         try {
             handleClient(clientSocket);
         } catch (IOException e) {
-            System.err.println("Error handling client: " + e.getMessage());
+            System.err.println("Fel vid hantering av klient: " + e.getMessage());
         }
     }
 
     private void handleClient(Socket clientSocket) throws IOException {
-        BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-        OutputStream out = clientSocket.getOutputStream();
-        
-        // Läs hela HTTP-förfrågan (inte bara första raden!)
+        BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), "UTF-8"));
+        BufferedWriter out = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream(), "UTF-8"));
+
         String requestLine = in.readLine();
-        if (requestLine == null) {
-            sendResponse(out, "400 Bad Request", "Invalid request");
+        if (requestLine == null || !requestLine.matches("^GET /[^ ]* HTTP/1\\.1$")) {
+            sendResponse(out, "400 Bad Request", "Ogiltig begäran");
             return;
         }
-    
-        // Läs resten av headers tills vi når en tom rad (HTTP-specifik)
-        while (true) {
-            String header = in.readLine();
-            if (header == null || header.isEmpty()) {
-                break; // Sluta läsa headers vid en tom rad
-            }
-        }
-    
-        // Kontrollera om requesten är en korrekt GET-förfrågan
-        if (!requestLine.startsWith("GET")) {
-            sendResponse(out, "400 Bad Request", "Only GET requests are supported");
+
+        String[] requestParts = requestLine.split(" ");
+        if (requestParts.length < 2) {
+            sendResponse(out, "400 Bad Request", "Ogiltig begäran");
             return;
         }
-    
-        String[] parts = requestLine.split(" ");
-        if (parts.length < 2) {
-            sendResponse(out, "400 Bad Request", "Malformed request");
+
+        String query = requestParts[1];
+        if (!query.startsWith("/ask?")) {
+            sendResponse(out, "404 Not Found", "Resursen hittades inte");
             return;
         }
-    
-        String queryString = parts[1];
-        if (!queryString.startsWith("/ask?")) {
-            sendResponse(out, "404 Not Found", "Invalid path");
+
+        Map<String, String> params = parseQuery(query.substring(5));
+        String hostname = params.get("hostname");
+        String portStr = params.get("port");
+        String string = params.get("string");
+        String shutdownStr = params.get("shutdown");
+        String limitStr = params.get("limit");
+        String timeoutStr = params.get("timeout");
+
+        if (hostname == null || portStr == null) {
+            sendResponse(out, "400 Bad Request", "Saknade obligatoriska parametrar");
             return;
         }
-    
-        // Parse query parameters
-        Map<String, String> params = parseQuery(queryString.substring(5));
-        if (!params.containsKey("hostname") || !params.containsKey("port")) {
-            sendResponse(out, "400 Bad Request", "Missing required parameters");
-            return;
-        }
-    
-        // Kör TCP-klienten
+
+        int port;
         try {
-            String hostname = params.get("hostname");
-            int targetPort = Integer.parseInt(params.get("port"));
-            String message = params.getOrDefault("string", "");
-            
-            TCPClient client = new TCPClient(false, 0, 0);
-            byte[] response = client.askServer(hostname, targetPort, message.isEmpty() ? null : message.getBytes(StandardCharsets.UTF_8)); 
-            String result = new String(response, StandardCharsets.UTF_8);
+            port = Integer.parseInt(portStr);
+        } catch (NumberFormatException e) {
+            sendResponse(out, "400 Bad Request", "Ogiltigt portnummer");
+            return;
+        }
+
+        boolean shutdown = Boolean.parseBoolean(shutdownStr);
+        int limit = limitStr != null ? Integer.parseInt(limitStr) : 0;
+        int timeout = timeoutStr != null ? Integer.parseInt(timeoutStr) : 0;
+
+        try {
+            TCPClient tcpClient = new TCPClient(shutdown, timeout, limit);
+            byte[] toServerBytes = (string != null) ? (string + "\n").getBytes("UTF-8") : new byte[0];
+            byte[] resultBytes = tcpClient.askServer(hostname, port, toServerBytes);
+            String result = new String(resultBytes, "UTF-8");
             sendResponse(out, "200 OK", result);
-        } catch (Exception e) {
-            sendResponse(out, "500 Internal Server Error", "Error: " + e.getMessage());
+        } catch (IOException e) {
+            sendResponse(out, "500 Internal Server Error", "Fel vid kommunikation med servern");
         }
     }
 
@@ -103,19 +107,22 @@ class ClientHandler implements Runnable {
         for (String pair : pairs) {
             String[] keyValue = pair.split("=");
             if (keyValue.length == 2) {
-                params.put(keyValue[0], keyValue[1]);
+                try {
+                    params.put(URLDecoder.decode(keyValue[0], "UTF-8"), URLDecoder.decode(keyValue[1], "UTF-8"));
+                } catch (UnsupportedEncodingException e) {
+                    throw new RuntimeException(e);
+                }
             }
         }
         return params;
     }
 
-    private void sendResponse(OutputStream out, String status, String content) throws IOException {
-        String response = "HTTP/1.1 " + status + "\r\n" +
-                "Content-Type: text/plain\r\n" +
-                "Content-Length: " + content.length() + "\r\n" +
-                "\r\n" +
-                content;
-        out.write(response.getBytes(StandardCharsets.UTF_8));
+    private void sendResponse(BufferedWriter out, String status, String content) throws IOException {
+        out.write("HTTP/1.1 " + status + "\r\n");
+        out.write("Content-Type: text/plain\r\n");
+        out.write("Content-Length: " + content.length() + "\r\n");
+        out.write("\r\n");
+        out.write(content);
         out.flush();
     }
 }
