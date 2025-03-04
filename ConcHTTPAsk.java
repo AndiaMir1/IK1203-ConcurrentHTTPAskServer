@@ -87,7 +87,7 @@ class ClientHandler implements Runnable {
         try {
             String hostname = params.get("hostname");
             int targetPort = Integer.parseInt(params.get("port"));
-            String message = params.getOrDefault("string", "") + "\n";
+            String message = params.getOrDefault("string", "");
             
             TCPClient client = new TCPClient(false, 0, 0);
             byte[] response = client.askServer(hostname, targetPort, message.getBytes(StandardCharsets.UTF_8)); 
